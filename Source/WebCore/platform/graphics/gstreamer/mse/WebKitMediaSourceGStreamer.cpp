@@ -255,6 +255,11 @@ static const char* streamTypeToString(TrackPrivateBaseGStreamer::TrackType type)
 
 static gboolean webKitMediaSrcQuery(GstElement* element, GstQuery* query)
 {
+    if (GST_QUERY_TYPE(query) == GST_QUERY_SELECTABLE) {
+        gst_query_set_selectable(query, TRUE);
+        return TRUE;
+    }
+
     gboolean result = GST_ELEMENT_CLASS(parent_class)->query(element, query);
 
     if (GST_QUERY_TYPE(query) != GST_QUERY_SCHEDULING)
