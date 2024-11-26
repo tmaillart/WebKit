@@ -3905,6 +3905,43 @@ static void testJSCExceptions()
     }
 }
 
+struct Fooo {
+    JSCValue *resolve, *reject;
+    GMainLoop *m;
+};
+
+static void foooFree(Fooo* fooo)
+{
+    g_object_unref(fooo->resolve);
+    g_object_unref(fooo->reject);
+    g_free(fooo);
+}
+
+static gboolean foooSource(gpointer data)
+{
+    Fooo* fooo = (Fooo*) data;
+    g_object_unref(jsc_value_function_call(fooo->resolve, G_TYPE_NONE));
+    g_main_loop_quit(fooo->m);
+    return FALSE;
+}
+
+static JSCValue* getPromise(Fooo* fooo)
+{
+    auto* jsContext = jsc_context_get_current();
+    JSCValue *promise;
+    promise = jsc_value_new_promise(jsContext, &fooo->resolve, &fooo->reject);
+    g_assert_true(promise);
+    g_idle_add(foooSource, fooo);
+    return promise;
+}
+
+static Fooo* foooCreate(GMainLoop *m)
+{
+    Fooo* fooo = g_new0(Fooo, 1);
+    fooo->m = m;
+    return fooo;
+}
+
 static void testJSCPromises()
 {
     {
@@ -3962,6 +3999,23 @@ static void testJSCPromises()
         checker.watch(value.get());
         g_assert_true(jsc_value_is_number(value.get()));
         g_assert_cmpint(jsc_value_to_int32(value.get()), ==, -1);
+    }
+
+    {
+        GMainLoop *m = g_main_loop_new(NULL, FALSE);
+
+        GRefPtr<JSCContext> context = adoptGRef(jsc_context_new());
+
+        JSCClass* foooClass = jsc_context_register_class(context.get(), "Fooo", nullptr, nullptr, reinterpret_cast<GDestroyNotify>(foooFree));
+        GRefPtr<JSCValue> foooConstructor = adoptGRef(jsc_class_add_constructor(foooClass, nullptr, G_CALLBACK(foooCreate), m, nullptr, G_TYPE_POINTER, 0, G_TYPE_NONE));
+        jsc_class_add_method(foooClass, "getPromise", G_CALLBACK(getPromise), nullptr, nullptr, JSC_TYPE_VALUE, 0, G_TYPE_NONE);
+        jsc_context_set_value(context.get(), jsc_class_get_name(foooClass), foooConstructor.get());
+
+        GRefPtr<JSCValue> result = adoptGRef(jsc_context_evaluate(context.get(), "result = -1; f = new Fooo(); f.getPromise().then(function (value) { result = 1; }, function (error) { result = 0; });", -1));
+        g_main_loop_run(m);
+        result = adoptGRef(jsc_context_get_value(context.get(), "result"));
+        g_assert_true(jsc_value_to_int32(result.get()) == 1);
+        g_main_loop_unref(m);
     }
 }
 
