@@ -85,7 +85,7 @@ def get_build_path(port, fatal=True):
     if is_valid_build_directory(build_dir):
         return build_dir
 
-    build_dir = top_level_path("WebKitBuild")
+    build_dir = top_level_path("WebKitBuild", "WPE", "Release")
     if is_valid_build_directory(build_dir):
         return build_dir
 
