@@ -3905,6 +3905,87 @@ static void testJSCExceptions()
     }
 }
 
+struct foo {
+    GMainLoop* mainLoop;
+    gpointer data;
+};
+
+static gboolean foooSuccessSource(gpointer data)
+{
+    struct foo* foo = (struct foo*) data;
+    g_object_unref(jsc_value_function_call(static_cast<JSCValue*>(foo->data), G_TYPE_NONE));
+    g_clear_pointer(&foo->data, g_object_unref);
+    g_main_loop_quit(foo->mainLoop);
+    return FALSE;
+}
+
+static void foooSuccessExecutor(JSCValue* resolve, JSCValue* reject, gpointer user_data)
+{
+    struct foo* foo = (struct foo*) user_data;
+    foo->data = g_object_ref(resolve);
+}
+
+static JSCValue* getAsyncResolvedPromise(struct foo* foo)
+{
+    JSCValue* promise = jsc_value_new_promise(jsc_context_get_current(), foooSuccessExecutor, foo);
+    g_assert_true(promise);
+    g_idle_add(foooSuccessSource, foo);
+    return promise;
+}
+
+static gboolean foooFailureSource(gpointer data)
+{
+    struct foo* foo = (struct foo*) data;
+    g_object_unref(jsc_value_function_call(static_cast<JSCValue*>(foo->data), G_TYPE_NONE));
+    g_clear_pointer(&foo->data, g_object_unref);
+    g_main_loop_quit(foo->mainLoop);
+    return FALSE;
+}
+
+static void foooFailureExecutor(JSCValue* resolve, JSCValue* reject, gpointer user_data)
+{
+    struct foo* foo = (struct foo*) user_data;
+    foo->data = g_object_ref(reject);
+}
+
+static JSCValue* getAsyncRejectedPromise(struct foo* foo)
+{
+    JSCValue* promise = jsc_value_new_promise(jsc_context_get_current(), foooFailureExecutor, foo);
+    g_assert_true(promise);
+    g_idle_add(foooFailureSource, foo);
+    return promise;
+}
+
+static void foooRejectedExecutor(JSCValue* resolve, JSCValue* reject, gpointer user_data)
+{
+    g_object_unref(jsc_value_function_call(reject, G_TYPE_BOOLEAN, TRUE, G_TYPE_NONE));
+}
+
+static void foooExceptionExecutor(JSCValue* resolve, JSCValue* reject, gpointer user_data)
+{
+    jsc_context_throw(jsc_context_get_current(), "exception in executor");
+}
+
+static JSCValue* getRejectedPromise(struct foo* foo)
+{
+    return jsc_value_new_promise(jsc_context_get_current(), foooRejectedExecutor, nullptr);
+}
+
+static JSCValue* getExceptionPromise(struct foo* foo)
+{
+    return jsc_value_new_promise(jsc_context_get_current(), foooExceptionExecutor, nullptr);
+}
+
+static void foooResolvedExecutor(JSCValue* resolve, JSCValue* reject, gpointer user_data)
+{
+    g_object_unref(jsc_value_function_call(resolve, G_TYPE_BOOLEAN, TRUE, G_TYPE_NONE));
+}
+
+static JSCValue* getResolvedPromise(struct foo* foo)
+{
+    return jsc_value_new_promise(jsc_context_get_current(), foooResolvedExecutor, nullptr);
+}
+
 static void testJSCPromises()
 {
     {
@@ -3962,6 +4043,73 @@ static void testJSCPromises()
         checker.watch(value.get());
         g_assert_true(jsc_value_is_number(value.get()));
         g_assert_cmpint(jsc_value_to_int32(value.get()), ==, -1);
+    }
+
+    {
+        GMainLoop* m = g_main_loop_new(NULL, FALSE);
+        struct foo foo = { .mainLoop = m, .data = nullptr };
+
+        GRefPtr<JSCContext> context = adoptGRef(jsc_context_new());
+
+        GRefPtr<JSCValue> function;
+        function = adoptGRef(jsc_value_new_function(context.get(), "getAsyncResolvedPromise", G_CALLBACK(getAsyncResolvedPromise), &foo, nullptr, JSC_TYPE_VALUE, 0, G_TYPE_NONE));
+        jsc_context_set_value(context.get(), "getAsyncResolvedPromise", function.get());
+        GRefPtr<JSCValue> result;
+        result = adoptGRef(jsc_context_evaluate(context.get(), "result = -1; getAsyncResolvedPromise().then(function (value) { result = 1; }, function (error) { result = 2; });", -1));
+        g_main_loop_run(m);
+        result = adoptGRef(jsc_context_get_value(context.get(), "result"));
+        g_assert_true(jsc_value_to_int32(result.get()) == 1);
+
+        function = adoptGRef(jsc_value_new_function(context.get(), "getAsyncRejectedPromise", G_CALLBACK(getAsyncRejectedPromise), &foo, nullptr, JSC_TYPE_VALUE, 0, G_TYPE_NONE));
+        jsc_context_set_value(context.get(), "getAsyncRejectedPromise", function.get());
+        result = adoptGRef(jsc_context_evaluate(context.get(), "result = -1; getAsyncRejectedPromise().then(function (value) { result = 1; }, function (error) { result = 2; });", -1));
+        g_main_loop_run(m);
+        result = adoptGRef(jsc_context_get_value(context.get(), "result"));
+        g_assert_true(jsc_value_to_int32(result.get()) == 2);
+
+        function = adoptGRef(jsc_value_new_function(context.get(), "getResolvedPromise", G_CALLBACK(getResolvedPromise), &foo, nullptr, JSC_TYPE_VALUE, 0, G_TYPE_NONE));
+        jsc_context_set_value(context.get(), "getResolvedPromise", function.get());
+        adoptGRef(jsc_context_evaluate(context.get(), "result = -1; getResolvedPromise().then(function (value) { result = 1; }, function (error) { result = 2; });", -1));
+        result = adoptGRef(jsc_context_get_value(context.get(), "result"));
+        g_assert_true(jsc_value_to_int32(result.get()) == 1);
+
+        function = adoptGRef(jsc_value_new_function(context.get(), "getRejectedPromise", G_CALLBACK(getRejectedPromise), &foo, nullptr, JSC_TYPE_VALUE, 0, G_TYPE_NONE));
+        jsc_context_set_value(context.get(), "getRejectedPromise", function.get());
+        adoptGRef(jsc_context_evaluate(context.get(), "result = -1; getRejectedPromise().then(function (value) { result = 1; }, function (error) { result = 2; });", -1));
+        result = adoptGRef(jsc_context_get_value(context.get(), "result"));
+        g_assert_true(jsc_value_to_int32(result.get()) == 2);
+
+        function = adoptGRef(jsc_value_new_function(context.get(), "getExceptionPromise", G_CALLBACK(getExceptionPromise), &foo, nullptr, JSC_TYPE_VALUE, 0, G_TYPE_NONE));
+        jsc_context_set_value(context.get(), "getExceptionPromise", function.get());
+        result = adoptGRef(jsc_context_evaluate(context.get(), "result = -1; getExceptionPromise().catch( (e) => { result = 3; }) instanceof Promise;", -1));
+        g_assert_true(jsc_value_to_boolean(result.get()));
+        result = adoptGRef(jsc_context_get_value(context.get(), "result"));
+        g_assert_true(jsc_value_to_int32(result.get()) == 3);
+
+        result = adoptGRef(jsc_context_evaluate(context.get(), "result = -1; getExceptionPromise().then((value) => { result = 1; }, (e) => { result = 3; });", -1));
+        result = adoptGRef(jsc_context_get_value(context.get(), "result"));
+        g_assert_true(jsc_value_to_int32(result.get()) == 3);
+
+        result = adoptGRef(jsc_context_evaluate(context.get(), "result = -1; getResolvedPromise().then((value) => { throw new Error(\"reject from js\"); }, (e) => { result = 3; }).then((value) => { result = 1; }, (e) => { result = 2; });", -1));
+        result = adoptGRef(jsc_context_get_value(context.get(), "result"));
+        g_assert_true(jsc_value_to_int32(result.get()) == 2);
+
+        GRefPtr<JSCValue> promise, resolve_func, reject_func;
+        promise = adoptGRef(jsc_context_evaluate(context.get(), "result = -1; p = getResolvedPromise();", -1));
+        resolve_func = adoptGRef(jsc_context_evaluate(context.get(), "res = function (a) { result = 1; }", -1));
+        reject_func  = adoptGRef(jsc_context_evaluate(context.get(), "rej = function (a) { result = 2; }", -1));
+        result = jsc_value_object_invoke_method(promise.get(), "then", JSC_TYPE_VALUE, resolve_func.get(), JSC_TYPE_VALUE, reject_func.get(), G_TYPE_NONE);
+        result = adoptGRef(jsc_context_get_value(context.get(), "result"));
+        g_assert_true(jsc_value_to_int32(result.get()) == 1);
+
+        GRefPtr<JSCValue> catch_func;
+        promise = adoptGRef(jsc_context_evaluate(context.get(), "result = -1; p = getExceptionPromise();", -1));
+        catch_func = adoptGRef(jsc_context_evaluate(context.get(), "cat = function (a) { result = 3; }", -1));
+        result = jsc_value_object_invoke_method(promise.get(), "catch", JSC_TYPE_VALUE, catch_func.get(), G_TYPE_NONE);
+        result = adoptGRef(jsc_context_get_value(context.get(), "result"));
+        g_assert_true(jsc_value_to_int32(result.get()) == 3);
+
+        g_main_loop_unref(m);
     }
 }
 
